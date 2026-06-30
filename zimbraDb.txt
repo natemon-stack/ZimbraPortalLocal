@@ -1,0 +1,279 @@
+﻿-- =============================================================
+--  ZIMBRA COLLABORATION SUITE — MySQL Schema
+--  Stack: XAMPP, PHP, MySQL, TypeScript, HTML, CSS
+-- =============================================================
+
+
+CREATE DATABASE IF NOT EXISTS zimbra;
+USE zimbra;
+
+
+-- =============================================================
+--  1. USERS
+--  Stores all staff accounts (admins, regular users)
+-- =============================================================
+CREATE TABLE users (
+    id            INT AUTO_INCREMENT PRIMARY KEY,
+    username      VARCHAR(50)  NOT NULL UNIQUE,
+    email         VARCHAR(100) NOT NULL UNIQUE,
+    password_hash VARCHAR(255) NOT NULL,               -- bcrypt hash, never plain text
+    full_name     VARCHAR(100) NOT NULL,
+    department    VARCHAR(100),
+    job_title     VARCHAR(100),
+    avatar_url    VARCHAR(255),
+    role          ENUM('admin', 'user') NOT NULL DEFAULT 'user',
+    is_active     BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+
+-- =============================================================
+--  2. EMAIL FOLDERS
+--  Each user has their own folder set (Inbox, Sent, Drafts, etc.)
+-- =============================================================
+CREATE TABLE folders (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    user_id     INT          NOT NULL,
+    name        VARCHAR(100) NOT NULL,
+    type        ENUM('inbox', 'sent', 'drafts', 'trash', 'spam', 'custom') NOT NULL DEFAULT 'custom',
+    parent_id   INT          DEFAULT NULL,             -- allows nested folders
+    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+
+    FOREIGN KEY (user_id)   REFERENCES users(id)   ON DELETE CASCADE,
+    FOREIGN KEY (parent_id) REFERENCES folders(id) ON DELETE SET NULL
+);
+
+
+-- =============================================================
+--  3. EMAILS
+--  Core email storage — one row per email
+-- =============================================================
+CREATE TABLE emails (
+    id           INT AUTO_INCREMENT PRIMARY KEY,
+    sender_id    INT          NOT NULL,                -- who sent it
+    subject      VARCHAR(255) NOT NULL DEFAULT '(No Subject)',
+    body         LONGTEXT     NOT NULL,
+    body_type    ENUM('plain', 'html') NOT NULL DEFAULT 'plain',
+    priority     ENUM('high', 'medium', 'low') NOT NULL DEFAULT 'medium',
+    is_draft     BOOLEAN NOT NULL DEFAULT FALSE,
+    sent_at      DATETIME     DEFAULT NULL,            -- NULL if still a draft
+    created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+
+    FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+
+-- =============================================================
+--  4. EMAIL RECIPIENTS
+--  Handles To / CC / BCC per email (many recipients per email)
+-- =============================================================
+CREATE TABLE email_recipients (
+    id           INT AUTO_INCREMENT PRIMARY KEY,
+    email_id     INT  NOT NULL,
+    recipient_id INT  NOT NULL,
+    type         ENUM('to', 'cc', 'bcc') NOT NULL DEFAULT 'to',
+    folder_id    INT  DEFAULT NULL,                    -- which folder this lands in for the recipient
+    is_read      BOOLEAN NOT NULL DEFAULT FALSE,
+    is_starred   BOOLEAN NOT NULL DEFAULT FALSE,
+    is_deleted   BOOLEAN NOT NULL DEFAULT FALSE,       -- soft delete (moves to trash)
+    received_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+
+    FOREIGN KEY (email_id)     REFERENCES emails(id)  ON DELETE CASCADE,
+    FOREIGN KEY (recipient_id) REFERENCES users(id)   ON DELETE CASCADE,
+    FOREIGN KEY (folder_id)    REFERENCES folders(id) ON DELETE SET NULL
+);
+
+
+-- =============================================================
+--  5. ATTACHMENTS
+--  Files attached to emails
+-- =============================================================
+CREATE TABLE attachments (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    email_id    INT          NOT NULL,
+    file_name   VARCHAR(255) NOT NULL,
+    file_path   VARCHAR(500) NOT NULL,                 -- server path under /uploads/
+    file_size   INT          NOT NULL,                 -- bytes
+    mime_type   VARCHAR(100) NOT NULL,
+    uploaded_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+
+    FOREIGN KEY (email_id) REFERENCES emails(id) ON DELETE CASCADE
+);
+
+
+-- =============================================================
+--  6. CONTACTS
+--  Per-user address book
+-- =============================================================
+CREATE TABLE contacts (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    user_id     INT          NOT NULL,                 -- owner of this contact
+    full_name   VARCHAR(100) NOT NULL,
+    email       VARCHAR(100) NOT NULL,
+    phone       VARCHAR(30)  DEFAULT NULL,
+    company     VARCHAR(100) DEFAULT NULL,
+    notes       TEXT         DEFAULT NULL,
+    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+
+-- =============================================================
+--  7. CALENDAR EVENTS
+-- =============================================================
+CREATE TABLE calendar_events (
+    id           INT AUTO_INCREMENT PRIMARY KEY,
+    organizer_id INT          NOT NULL,
+    title        VARCHAR(255) NOT NULL,
+    description  TEXT         DEFAULT NULL,
+    location     VARCHAR(255) DEFAULT NULL,
+    start_time   DATETIME     NOT NULL,
+    end_time     DATETIME     NOT NULL,
+    is_all_day   BOOLEAN NOT NULL DEFAULT FALSE,
+    recurrence   ENUM('none', 'daily', 'weekly', 'monthly', 'yearly') NOT NULL DEFAULT 'none',
+    created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+
+    FOREIGN KEY (organizer_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+
+-- =============================================================
+--  8. CALENDAR EVENT ATTENDEES
+--  Who is invited to each event
+-- =============================================================
+CREATE TABLE event_attendees (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    event_id    INT NOT NULL,
+    user_id     INT NOT NULL,
+    status      ENUM('pending', 'accepted', 'declined', 'tentative') NOT NULL DEFAULT 'pending',
+
+
+    FOREIGN KEY (event_id) REFERENCES calendar_events(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id)  REFERENCES users(id)           ON DELETE CASCADE,
+    UNIQUE KEY unique_attendee (event_id, user_id)
+);
+
+
+-- =============================================================
+--  9. TASKS
+-- =============================================================
+CREATE TABLE tasks (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    user_id     INT          NOT NULL,
+    title       VARCHAR(255) NOT NULL,
+    description TEXT         DEFAULT NULL,
+    due_date    DATE         DEFAULT NULL,
+    priority    ENUM('high', 'medium', 'low') NOT NULL DEFAULT 'medium',
+    status      ENUM('pending', 'in_progress', 'completed') NOT NULL DEFAULT 'pending',
+    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+
+-- =============================================================
+--  10. DOCUMENTS (File Sharing)
+--  Centralized document storage shared across the organization
+-- =============================================================
+CREATE TABLE documents (
+    id           INT AUTO_INCREMENT PRIMARY KEY,
+    uploaded_by  INT          NOT NULL,
+    file_name    VARCHAR(255) NOT NULL,
+    file_path    VARCHAR(500) NOT NULL,
+    file_size    INT          NOT NULL,                -- bytes
+    mime_type    VARCHAR(100) NOT NULL,
+    description  TEXT         DEFAULT NULL,
+    is_public    BOOLEAN NOT NULL DEFAULT FALSE,       -- visible to all staff if TRUE
+    created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+
+    FOREIGN KEY (uploaded_by) REFERENCES users(id) ON DELETE CASCADE
+);
+
+
+-- =============================================================
+--  11. DOCUMENT PERMISSIONS
+--  Fine-grained sharing: who can view/edit each document
+-- =============================================================
+CREATE TABLE document_permissions (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    document_id INT  NOT NULL,
+    user_id     INT  NOT NULL,
+    permission  ENUM('view', 'edit') NOT NULL DEFAULT 'view',
+
+
+    FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id)     REFERENCES users(id)     ON DELETE CASCADE,
+    UNIQUE KEY unique_permission (document_id, user_id)
+);
+
+
+-- =============================================================
+--  12. SESSIONS
+--  Tracks active PHP login sessions
+-- =============================================================
+CREATE TABLE sessions (
+    id         INT AUTO_INCREMENT PRIMARY KEY,
+    user_id    INT          NOT NULL,
+    token      VARCHAR(255) NOT NULL UNIQUE,           -- random session token
+    ip_address VARCHAR(45)  DEFAULT NULL,
+    expires_at DATETIME     NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+
+-- =============================================================
+--  INDEXES — speeds up the most common queries
+-- =============================================================
+CREATE INDEX idx_emails_sender        ON emails(sender_id);
+CREATE INDEX idx_emails_sent_at       ON emails(sent_at);
+CREATE INDEX idx_recipients_email     ON email_recipients(email_id);
+CREATE INDEX idx_recipients_user      ON email_recipients(recipient_id);
+CREATE INDEX idx_recipients_read      ON email_recipients(is_read);
+CREATE INDEX idx_folders_user         ON folders(user_id);
+CREATE INDEX idx_contacts_user        ON contacts(user_id);
+CREATE INDEX idx_events_organizer     ON calendar_events(organizer_id);
+CREATE INDEX idx_events_start         ON calendar_events(start_time);
+CREATE INDEX idx_tasks_user           ON tasks(user_id);
+CREATE INDEX idx_tasks_status         ON tasks(status);
+CREATE INDEX idx_documents_uploader   ON documents(uploaded_by);
+CREATE INDEX idx_sessions_token       ON sessions(token);
+CREATE INDEX idx_sessions_expires     ON sessions(expires_at);
+
+
+-- =============================================================
+--  SEED DATA — default admin account + system folders
+-- =============================================================
+
+
+-- Default admin user (password: Admin@1234 — change immediately)
+INSERT INTO users (username, email, password_hash, full_name, role)
+VALUES (
+    'admin',
+    'admin@gits.com',
+    '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', -- bcrypt of "Admin@1234"
+    'System Administrator',
+    'admin'
+);
+
+
+-- Default inbox/sent/drafts/trash/spam folders for admin
+INSERT INTO folders (user_id, name, type) VALUES
+    (1, 'Inbox',  'inbox'),
+    (1, 'Sent',   'sent'),
+    (1, 'Drafts', 'drafts'),
+    (1, 'Trash',  'trash'),
+    (1, 'Spam',   'spam');
